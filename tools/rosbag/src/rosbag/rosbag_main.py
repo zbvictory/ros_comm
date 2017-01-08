@@ -49,6 +49,7 @@ import roslib.packages
 
 from .bag import Bag, Compression, ROSBagException, ROSBagFormatException, ROSBagUnindexedException
 from .migration import MessageMigrator, fixbag2, checkbag
+from rospy.rostime import Time
 
 def print_trans(old, new, indent):
     from_txt = '%s [%s]' % (old._type, old._md5sum)
@@ -126,7 +127,7 @@ def record_cmd(argv):
     subprocess.call(cmd)
 
 def info_cmd(argv):
-    parser = optparse.OptionParser(usage='rosbag info [options] BAGFILE1 [BAGFILE2 BAGFILE3 ...]',
+    parser = optparse.OptionParser(usage='rrosbag info [options] BAGFILE1 [BAGFILE2 BAGFILE3 ...]',
                                    description='Summarize the contents of one or more bag files.')
     parser.add_option('-y', '--yaml', dest='yaml', default=False, action='store_true', help='print information in YAML format')
     parser.add_option('-k', '--key',  dest='key',  default=None,  action='store',      help='print information on the given key')
@@ -185,7 +186,7 @@ def handle_pause_topics(option, opt_str, value, parser):
 
 
 def play_cmd(argv):
-    parser = optparse.OptionParser(usage="rosbag play BAGFILE1 [BAGFILE2 BAGFILE3 ...]",
+    parser = optparse.OptionParser(usage="rrosbag play BAGFILE1 [BAGFILE2 BAGFILE3 ...]",
                                    description="Play back the contents of one or more bag files in a time-synchronized fashion.")
     parser.add_option("-p", "--prefix",       dest="prefix",     default='',    type='str',          help="prefix all output topics")
     parser.add_option("-q", "--quiet",        dest="quiet",      default=False, action="store_true", help="suppress console output")
@@ -214,10 +215,12 @@ def play_cmd(argv):
     if len(args) == 0:
         parser.error('You must specify at least 1 bag file to play back.')
 
-    playpath = roslib.packages.find_node('rosbag', 'play')
-    if not playpath:
-        parser.error("Cannot find rosbag/play executable")
-    cmd = [playpath[0]]
+    #playpath = roslib.packages.find_node('rosbag', 'play')
+    #if not playpath:
+    #    parser.error("Cannot find rrosbag/rplay executable")
+    #cmd = [playpath[0]]
+    playpath = os.getenv('RROSBAG_PATH') + '/lib/rrosbag/rplay'
+    cmd = [playpath]
 
     if options.prefix:
         cmd.extend(["--prefix", str(options.prefix)])
@@ -261,8 +264,7 @@ def filter_cmd(argv):
         def eval_fn(topic, m, t):
             return eval(expr)
         return eval_fn
-
-    parser = optparse.OptionParser(usage="""rosbag filter [options] INBAG OUTBAG EXPRESSION
+    parser = optparse.OptionParser(usage="""rrosbag filter [options] INBAG OUTBAG EXPRESSION
 
 EXPRESSION can be any Python-legal expression.
 
@@ -285,9 +287,9 @@ The following variables are available:
 
     inbag_filename, outbag_filename, expr = args
 
-    if not os.path.isfile(inbag_filename):
-        print('Cannot locate input bag file [%s]' % inbag_filename, file=sys.stderr)
-        sys.exit(2)
+    #if not os.path.isfile(inbag_filename):
+    #    print('Cannot locate input bag file [%s]' % inbag_filename, file=sys.stderr)
+    #    sys.exit(2)
 
     if os.path.realpath(inbag_filename) == os.path.realpath(outbag_filename):
         print('Cannot use same file as input and output [%s]' % inbag_filename, file=sys.stderr)
@@ -324,7 +326,16 @@ The following variables are available:
                 total_bytes += len(serialized_bytes) 
                 meter.step(total_bytes)
         else:
-            for topic, raw_msg, t in inbag.read_messages(raw=True):
+            topics = get_topics(expr)
+            if (None == get_start_time(expr)):
+                start_t = None
+            else:
+                start_t = Time.from_sec(float(get_start_time(expr)))
+            if (None == get_end_time(expr)):
+                end_t = None
+            else:
+                end_t = Time.from_sec(float(get_end_time(expr)))
+            for topic, raw_msg, t in inbag.read_messages(topics, start_time = start_t, end_time = end_t, raw=True):
                 msg_type, serialized_bytes, md5sum, pos, pytype = raw_msg
                 msg = pytype()
                 msg.deserialize(serialized_bytes)
@@ -340,6 +351,55 @@ The following variables are available:
     finally:
         inbag.close()
         outbag.close()
+
+# speed up filter topic --zbv
+def get_topics(expr):
+    topics = list()
+    exprs = expr.split('or ')
+    for info in exprs:
+        # topic==' or " size is 7
+        temp = info.replace(' ', '') 
+        start = temp.find('topic==')
+        if (start != -1):
+            # find the latest match ' or "
+            end = temp.find(temp[start + 7], (start + 8)) 
+            topic = temp[(start + 8) : end]
+            topics.append(topic)
+        else:
+            return None
+    return topics
+
+def get_start_time(expr):
+    start = expr.find('or ')
+    start_time = None
+    if (start == -1):
+        exprs = expr.split('and ')
+        for info in exprs:
+            temp = info.replace(' ', '') 
+            start = temp.find('t.to_sec()>')
+            if (start != -1):
+                start = start + 11
+                if (temp[start] == '='):
+                    start = start + 1 
+                start_time = temp[start : ] 
+                break
+    return start_time
+
+def get_end_time(expr):
+    start = expr.find('or ')
+    end_time = None
+    if (start == -1):
+        exprs = expr.split('and ')
+        for info in exprs:
+            temp = info.replace(' ', '') 
+            start = temp.find('t.to_sec()<')
+            if (start != -1):
+                start = start + 11
+                if (temp[start] == '='):
+                    start = start + 1 
+                end_time = temp[start : ] 
+                break
+    return end_time
 
 def fix_cmd(argv):
     parser = optparse.OptionParser(usage='rosbag fix INBAG OUTBAG [EXTRARULES1 EXTRARULES2 ...]', description='Repair the messages in a bag file so that it can be played in the current system.')
@@ -732,9 +792,9 @@ class RosbagCmds(UserDict):
         argv = [a for a in argv if a != '-h' and a != '--help']
 
         if len(argv) == 0:
-            print('Usage: rosbag <subcommand> [options] [args]')
+            print('Usage: rrosbag <subcommand> [options] [args]')
             print()
-            print("A bag is a file format in ROS for storing ROS message data. The rosbag command can record, replay and manipulate bags.")
+            print("A bag is a file format in ROS for storing ROS message data. The rrosbag command can play, filter and manipulate bags.")
             print()
             print(self.get_valid_cmds())
             print('For additional information, see http://wiki.ros.org/rosbag')
@@ -836,15 +896,9 @@ class ProgressMeter(object):
 
 def rosbagmain(argv=None):
     cmds = RosbagCmds()
-    cmds.add_cmd('record', record_cmd, "Record a bag file with the contents of specified topics.")
     cmds.add_cmd('info', info_cmd, 'Summarize the contents of one or more bag files.')
     cmds.add_cmd('play', play_cmd, "Play back the contents of one or more bag files in a time-synchronized fashion.")
-    cmds.add_cmd('check', check_cmd, 'Determine whether a bag is playable in the current system, or if it can be migrated.')
-    cmds.add_cmd('fix', fix_cmd, 'Repair the messages in a bag file so that it can be played in the current system.')
     cmds.add_cmd('filter', filter_cmd, 'Filter the contents of the bag.')
-    cmds.add_cmd('compress', compress_cmd, 'Compress one or more bag files.')
-    cmds.add_cmd('decompress', decompress_cmd, 'Decompress one or more bag files.')
-    cmds.add_cmd('reindex', reindex_cmd, 'Reindexes one or more bag files.')
 
     if argv is None:
         argv = sys.argv
